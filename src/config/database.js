@@ -1,16 +1,14 @@
 const { Pool } = require('pg');
 
-const connectionString = process.env.DATABASE_URL;
-console.log('DATABASE_URL recebida:', connectionString ? 'SIM' : 'NÃO');
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'OK' : 'MISSING');
 
 const pool = new Pool({
-  connectionString: connectionString,
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
 pool.on('error', (err) => {
   console.error('Erro no PostgreSQL:', err);
-  process.exit(-1);
 });
 
 module.exports = {
