@@ -1,9 +1,11 @@
 const { Pool } = require('pg');
 
-console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'OK' : 'MISSING');
-
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  host: 'db.qjjaeudgkcnetlzprtcw.supabase.co',
+  port: 5432,
+  database: 'postgres',
+  user: 'postgres',
+  password: 'Abaia86702030',
   ssl: { rejectUnauthorized: false }
 });
 
