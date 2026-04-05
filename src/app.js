@@ -10,7 +10,11 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 
 app.get('/api/status', (req, res) => {
-  res.json({ status: 'ok', message: 'API funcionando!' });
+  res.status(200).json({ status: 'ok', message: 'API funcionando!' });
+});
+
+app.use((req, res) => {
+  res.status(404).json({ message: 'Rota não encontrada' });
 });
 
 module.exports = app;
