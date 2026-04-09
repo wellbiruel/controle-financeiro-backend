@@ -9,6 +9,7 @@ function authenticateToken(req, res, next) {
   const user = verifyToken(token);
   if (!user) return res.status(403).json({ message: 'Token inválido ou expirado.' });
 
+  req.usuario = user;
   req.userId = user.id;
   next();
 }
