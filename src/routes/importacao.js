@@ -2,10 +2,9 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const ExcelJS = require('exceljs');
-const { Pool } = require('pg');
 const { Readable } = require('stream');
+const { pool } = require('../config/database');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const authenticateToken = require('../middleware/authMiddleware');
 
