@@ -181,24 +181,52 @@ router.post('/preview', authenticateToken, upload.single('arquivo'), async (req,
 });
 
 // ─── POST /confirmar ──────────────────────────────────────────────────────────
-router.post('/confirmar', authenticateToken, async (req, res) => {
-  const { tipo, linhas, usuario_id } = req.body;
+router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (req, res) => {
+  const usuario_id = req.userId; // vem do token JWT, não do body
   const client = await pool.connect();
 
   try {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+
+    // Re-processa o arquivo (mesma pipeline do preview)
+    const sheets = await lerPlanilha(req.file.buffer, req.file.originalname);
+    let todasLinhas = [];
+    let globalLine = 1;
+
+    for (const sheet of sheets) {
+      const tipoSheet = detectarTipo(sheet.headers);
+      if (!tipoSheet) continue;
+      const linhasSheet = sheet.rows.map((row, i) => {
+        const lineNumber = globalLine + i + 1;
+        return tipoSheet === 'saida'
+          ? validarSaida(row, lineNumber)
+          : validarEntrada(row, lineNumber);
+      });
+      globalLine += sheet.rows.length;
+      todasLinhas = todasLinhas.concat(linhasSheet);
+    }
+
+    if (todasLinhas.length === 0)
+      return res.status(400).json({ error: 'Nenhuma linha com dados encontrada' });
+
     await client.query('BEGIN');
     let importados = 0;
 
-    if (tipo === 'saida') {
-      for (const linha of linhas) {
-        if (linha.status === 'erro') continue;
+    for (const linha of todasLinhas) {
+      if (!linha.valida) continue; // usa linha.valida (não linha.status)
 
+      // data vem como "MM/AAAA" do validar*
+      const [mesStr, anoStr] = (linha.data || '/').split('/');
+      const mes = parseInt(mesStr, 10);
+      const ano = parseInt(anoStr, 10);
+
+      if (linha.tipo === 'saida') {
         let itemRes = await client.query(
           `SELECT i.id FROM itens_financeiros i
            JOIN grupos_financeiros g ON i.grupo_id = g.id
            WHERE LOWER(i.nome) = LOWER($1) AND g.usuario_id = $2
            LIMIT 1`,
-          [linha.item, usuario_id]
+          [linha.descricao, usuario_id]
         );
 
         let itemId;
@@ -217,10 +245,9 @@ router.post('/confirmar', authenticateToken, async (req, res) => {
           } else {
             grupoId = grupoRes.rows[0].id;
           }
-
           const novoItem = await client.query(
             `INSERT INTO itens_financeiros (nome, grupo_id, tipo) VALUES ($1, $2, 'fixo') RETURNING id`,
-            [linha.item, grupoId]
+            [linha.descricao, grupoId]
           );
           itemId = novoItem.rows[0].id;
         } else {
@@ -231,20 +258,17 @@ router.post('/confirmar', authenticateToken, async (req, res) => {
           `INSERT INTO lancamentos_mensais (item_id, mes, ano, valor)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (item_id, mes, ano) DO UPDATE SET valor = EXCLUDED.valor`,
-          [itemId, linha.mes, linha.ano, linha.valor]
+          [itemId, mes, ano, linha.valor]
         );
         importados++;
       }
-    }
 
-    if (tipo === 'entrada') {
-      for (const linha of linhas) {
-        if (linha.status === 'erro') continue;
+      if (linha.tipo === 'entrada') {
         await client.query(
           `INSERT INTO transacoes (usuario_id, tipo, valor, mes, ano, descricao, categoria)
            VALUES ($1, 'entrada', $2, $3, $4, $5, $6)
            ON CONFLICT DO NOTHING`,
-          [usuario_id, linha.valor, linha.mes, linha.ano, linha.tipo, 'Entrada']
+          [usuario_id, linha.valor, mes, ano, linha.descricao, 'Entrada']
         );
         importados++;
       }
