@@ -213,7 +213,7 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
     let importados = 0;
 
     for (const linha of todasLinhas) {
-      if (!linha.valida) continue; // usa linha.valida (não linha.status)
+      if (!linha.valida) continue;
 
       // data vem como "MM/AAAA" do validar*
       const [mesStr, anoStr] = (linha.data || '/').split('/');
@@ -221,6 +221,7 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
       const ano = parseInt(anoStr, 10);
 
       if (linha.tipo === 'saida') {
+        // busca item pelo nome + usuario
         let itemRes = await client.query(
           `SELECT i.id FROM itens_financeiros i
            JOIN grupos_financeiros g ON i.grupo_id = g.id
@@ -231,6 +232,7 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
 
         let itemId;
         if (itemRes.rows.length === 0) {
+          // busca ou cria grupo
           let grupoRes = await client.query(
             `SELECT id FROM grupos_financeiros WHERE LOWER(nome) = LOWER($1) AND usuario_id = $2 LIMIT 1`,
             [linha.categoria || 'Outros', usuario_id]
@@ -245,30 +247,33 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
           } else {
             grupoId = grupoRes.rows[0].id;
           }
+          // cria item com usuario_id
           const novoItem = await client.query(
-            `INSERT INTO itens_financeiros (nome, grupo_id, tipo) VALUES ($1, $2, 'fixo') RETURNING id`,
-            [linha.descricao, grupoId]
+            `INSERT INTO itens_financeiros (nome, grupo_id, usuario_id, tipo) VALUES ($1, $2, $3, 'fixo') RETURNING id`,
+            [linha.descricao, grupoId, usuario_id]
           );
           itemId = novoItem.rows[0].id;
         } else {
           itemId = itemRes.rows[0].id;
         }
 
+        // upsert em lancamentos_mensais com usuario_id
         await client.query(
-          `INSERT INTO lancamentos_mensais (item_id, mes, ano, valor)
-           VALUES ($1, $2, $3, $4)
+          `INSERT INTO lancamentos_mensais (item_id, usuario_id, mes, ano, valor)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (item_id, mes, ano) DO UPDATE SET valor = EXCLUDED.valor`,
-          [itemId, mes, ano, linha.valor]
+          [itemId, usuario_id, mes, ano, linha.valor]
         );
         importados++;
       }
 
       if (linha.tipo === 'entrada') {
+        // transacoes usa coluna 'data' (DATE) e tipo 'receita'
+        const dataStr = `${ano}-${String(mes).padStart(2, '0')}-01`;
         await client.query(
-          `INSERT INTO transacoes (usuario_id, tipo, valor, mes, ano, descricao, categoria)
-           VALUES ($1, 'entrada', $2, $3, $4, $5, $6)
-           ON CONFLICT DO NOTHING`,
-          [usuario_id, linha.valor, mes, ano, linha.descricao, 'Entrada']
+          `INSERT INTO transacoes (usuario_id, descricao, valor, tipo, data)
+           VALUES ($1, $2, $3, 'receita', $4)`,
+          [usuario_id, linha.descricao, linha.valor, dataStr]
         );
         importados++;
       }
