@@ -44,4 +44,28 @@ async function login(req, res) {
   }
 }
 
-module.exports = { register, login };
+async function changePassword(req, res) {
+  const { senhaAtual, novaSenha } = req.body;
+  if (!senhaAtual || !novaSenha) {
+    return res.status(400).json({ message: 'Informe a senha atual e a nova senha.' });
+  }
+  if (novaSenha.length < 6) {
+    return res.status(400).json({ message: 'A nova senha deve ter pelo menos 6 caracteres.' });
+  }
+  try {
+    const user = await userModel.findUserByEmail(req.usuario.email);
+    if (!user) return res.status(404).json({ message: 'Usuário não encontrado.' });
+
+    const valid = await comparePassword(senhaAtual, user.senha_hash);
+    if (!valid) return res.status(401).json({ message: 'Senha atual incorreta.' });
+
+    const newHash = await hashPassword(novaSenha);
+    await userModel.updatePassword(user.id, newHash);
+    res.json({ message: 'Senha alterada com sucesso.' });
+  } catch (error) {
+    console.error('Erro ao alterar senha:', error);
+    res.status(500).json({ message: 'Erro interno do servidor.' });
+  }
+}
+
+module.exports = { register, login, changePassword };

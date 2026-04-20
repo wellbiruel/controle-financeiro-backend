@@ -18,8 +18,13 @@ async function findUserById(id) {
   return result.rows[0];
 }
 
+async function updatePassword(id, newHash) {
+  await db.query('UPDATE usuarios SET senha_hash = $1 WHERE id = $2', [newHash, id]);
+}
+
 module.exports = {
   createUser,
   findUserByEmail,
   findUserById,
+  updatePassword,
 };
