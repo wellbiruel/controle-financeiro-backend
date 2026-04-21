@@ -53,7 +53,7 @@ async function changePassword(req, res) {
     return res.status(400).json({ message: 'A nova senha deve ter pelo menos 6 caracteres.' });
   }
   try {
-    const user = await userModel.findUserByEmail(req.usuario.email);
+    const user = await userModel.findUserById(req.userId);
     if (!user) return res.status(404).json({ message: 'Usuário não encontrado.' });
 
     const valid = await comparePassword(senhaAtual, user.senha_hash);
