@@ -73,6 +73,30 @@ async function criarTransacao(req, res) {
   }
 }
 
+async function atualizarTransacao(req, res) {
+  try {
+    const { id } = req.params;
+    const { descricao, valor, tipo, data, categoria } = req.body;
+    if (!descricao || !valor || !tipo || !data) {
+      return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
+    }
+    const categoriaId = categoria
+      ? await getOrCreateCategoria(req.userId, categoria, tipo)
+      : null;
+    const result = await db.query(
+      'UPDATE transacoes SET descricao=$1, valor=$2, tipo=$3, data=$4, categoria_id=$5 WHERE id=$6 AND usuario_id=$7 RETURNING *',
+      [descricao, valor, tipo, data, categoriaId, id, req.userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Transação não encontrada.' });
+    }
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erro ao atualizar transação:', error);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+}
+
 async function deletarTransacao(req, res) {
   try {
     const { id } = req.params;
@@ -178,4 +202,4 @@ async function getResumoSaidas(req, res) {
   }
 }
 
-module.exports = { listarTransacoes, criarTransacao, deletarTransacao, getResumoSaidas };
+module.exports = { listarTransacoes, criarTransacao, atualizarTransacao, deletarTransacao, getResumoSaidas };
