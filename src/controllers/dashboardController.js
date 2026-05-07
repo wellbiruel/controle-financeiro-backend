@@ -7,195 +7,207 @@ async function getDashboardCompleto(req, res) {
     const usuarioId = req.userId;
     const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
     const ano = parseInt(req.query.ano) || new Date().getFullYear();
-
-    // ── KPIs do mês ──────────────────────────────────────────────
-    const kpisResult = await db.query(`
-      SELECT
-        COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-        COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-        COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes_mes
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND EXTRACT(MONTH FROM data) = $2
-        AND EXTRACT(YEAR  FROM data) = $3
-    `, [usuarioId, mes, ano]);
-
-    const entradas   = parseFloat(kpisResult.rows[0].entradas);
-    const saidas     = parseFloat(kpisResult.rows[0].saidas);
-    const aportesMes = parseFloat(kpisResult.rows[0].aportes_mes);
-    const saldo      = entradas - saidas;
-
-    // ── Mês anterior para comparativos ───────────────────────────
     const mesAnt = mes === 1 ? 12 : mes - 1;
     const anoAnt = mes === 1 ? ano - 1 : ano;
-    const kpisAntResult = await db.query(`
-      SELECT
-        COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-        COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-        COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND EXTRACT(MONTH FROM data) = $2
-        AND EXTRACT(YEAR  FROM data) = $3
-    `, [usuarioId, mesAnt, anoAnt]);
 
-    const entradasAnt = parseFloat(kpisAntResult.rows[0].entradas);
-    const saidasAnt   = parseFloat(kpisAntResult.rows[0].saidas);
-    const aportesAnt  = parseFloat(kpisAntResult.rows[0].aportes);
+    // Todas as queries rodam em paralelo — nenhuma depende do resultado de outra
+    const [
+      kpisRes,
+      kpisAntRes,
+      patrimonioRes,
+      patInicioRes,
+      saldoPorMesRes,
+      categoriasRes,
+      maiorGastoRes,
+      maiorGastoAntRes,
+      resumoRes,
+      maiorImpactoRes,
+    ] = await Promise.all([
+
+      // 1. KPIs do mês atual
+      db.query(`
+        SELECT
+          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes_mes
+        FROM transacoes
+        WHERE usuario_id = $1
+          AND EXTRACT(MONTH FROM data) = $2
+          AND EXTRACT(YEAR  FROM data) = $3
+      `, [usuarioId, mes, ano]),
+
+      // 2. KPIs do mês anterior (comparativos)
+      db.query(`
+        SELECT
+          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
+        FROM transacoes
+        WHERE usuario_id = $1
+          AND EXTRACT(MONTH FROM data) = $2
+          AND EXTRACT(YEAR  FROM data) = $3
+      `, [usuarioId, mesAnt, anoAnt]),
+
+      // 3. Patrimônio mais recente (tabela pode não existir)
+      db.query(`
+        SELECT patrimonio_total FROM investimentos
+        WHERE usuario_id = $1
+        ORDER BY data_referencia DESC, id DESC
+        LIMIT 1
+      `, [usuarioId]).catch(() => ({ rows: [] })),
+
+      // 4. Patrimônio início do ano (crescimento YTD)
+      db.query(`
+        SELECT patrimonio_total FROM investimentos
+        WHERE usuario_id = $1
+          AND EXTRACT(YEAR FROM data_referencia) = $2
+        ORDER BY data_referencia ASC, id ASC
+        LIMIT 1
+      `, [usuarioId, ano]).catch(() => ({ rows: [] })),
+
+      // 5. Saldo por mês do ano (gráfico)
+      db.query(`
+        SELECT
+          EXTRACT(MONTH FROM data) AS mes,
+          COALESCE(SUM(CASE WHEN tipo = 'entrada' THEN valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN tipo = 'saida'   THEN valor ELSE 0 END), 0) AS saidas
+        FROM transacoes
+        WHERE usuario_id = $1
+          AND EXTRACT(YEAR FROM data) = $2
+          AND tipo IN ('entrada', 'saida')
+        GROUP BY EXTRACT(MONTH FROM data)
+        ORDER BY mes
+      `, [usuarioId, ano]),
+
+      // 6. Categorias de saída do mês (pizza)
+      db.query(`
+        SELECT COALESCE(c.nome, 'Outros') AS categoria, SUM(t.valor) AS total
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'saida'
+          AND EXTRACT(MONTH FROM t.data) = $2
+          AND EXTRACT(YEAR  FROM t.data) = $3
+        GROUP BY c.nome
+        ORDER BY total DESC
+        LIMIT 6
+      `, [usuarioId, mes, ano]),
+
+      // 7. Maior gasto do mês
+      db.query(`
+        SELECT t.descricao, t.valor, COALESCE(c.nome, 'Outros') AS categoria
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'saida'
+          AND EXTRACT(MONTH FROM t.data) = $2
+          AND EXTRACT(YEAR  FROM t.data) = $3
+        ORDER BY t.valor DESC
+        LIMIT 1
+      `, [usuarioId, mes, ano]),
+
+      // 8. Maior gasto do mês anterior (tendência)
+      db.query(`
+        SELECT valor FROM transacoes
+        WHERE usuario_id = $1
+          AND tipo = 'saida'
+          AND EXTRACT(MONTH FROM data) = $2
+          AND EXTRACT(YEAR  FROM data) = $3
+        ORDER BY valor DESC LIMIT 1
+      `, [usuarioId, mesAnt, anoAnt]),
+
+      // 9. Resumo Jan–mês atual (acumulado do ano)
+      db.query(`
+        SELECT
+          EXTRACT(MONTH FROM data) AS mes,
+          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
+        FROM transacoes
+        WHERE usuario_id = $1
+          AND EXTRACT(YEAR  FROM data) = $2
+          AND EXTRACT(MONTH FROM data) <= $3
+        GROUP BY EXTRACT(MONTH FROM data)
+        ORDER BY mes
+      `, [usuarioId, ano, mes]),
+
+      // 10. Maior categoria de impacto no período (Jan–mês)
+      db.query(`
+        SELECT COALESCE(c.nome, 'Outros') AS categoria, SUM(t.valor) AS total
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'saida'
+          AND EXTRACT(YEAR  FROM t.data) = $2
+          AND EXTRACT(MONTH FROM t.data) <= $3
+        GROUP BY c.nome
+        ORDER BY total DESC
+        LIMIT 1
+      `, [usuarioId, ano, mes]),
+    ]);
+
+    // ── Processa KPIs ─────────────────────────────────────────────
+    const entradas   = parseFloat(kpisRes.rows[0].entradas);
+    const saidas     = parseFloat(kpisRes.rows[0].saidas);
+    const aportesMes = parseFloat(kpisRes.rows[0].aportes_mes);
+    const saldo      = entradas - saidas;
+
+    const entradasAnt = parseFloat(kpisAntRes.rows[0].entradas);
+    const saidasAnt   = parseFloat(kpisAntRes.rows[0].saidas);
+    const aportesAnt  = parseFloat(kpisAntRes.rows[0].aportes);
     const saldoAnt    = entradasAnt - saidasAnt;
 
     const pctEntradas = entradasAnt > 0 ? Math.round(((entradas - entradasAnt) / entradasAnt) * 100) : 0;
     const pctSaidas   = saidasAnt   > 0 ? Math.round(((saidas   - saidasAnt)   / saidasAnt)   * 100) : 0;
     const pctAportes  = aportesAnt  > 0 ? Math.round(((aportesMes - aportesAnt) / aportesAnt) * 100) : 0;
 
-    // ── Patrimônio investido (último registro salvo) ──────────────
-    let patrimonioTotal = 0;
-    let patrimonioVsMes = aportesMes;
-    try {
-      const patResult = await db.query(`
-        SELECT patrimonio_total FROM investimentos
-        WHERE usuario_id = $1
-        ORDER BY data_referencia DESC, id DESC
-        LIMIT 1
-      `, [usuarioId]);
-      if (patResult.rows.length > 0) {
-        patrimonioTotal = parseFloat(patResult.rows[0].patrimonio_total);
-      }
-    } catch (_) { /* tabela pode não existir ainda */ }
+    // ── Patrimônio ────────────────────────────────────────────────
+    const patrimonioTotal = patrimonioRes.rows.length > 0
+      ? parseFloat(patrimonioRes.rows[0].patrimonio_total) : 0;
 
-    // Crescimento patrimonial no ano
     let patrimonioCrescimentoAno = 0;
-    try {
-      const patInicioResult = await db.query(`
-        SELECT patrimonio_total FROM investimentos
-        WHERE usuario_id = $1
-          AND EXTRACT(YEAR FROM data_referencia) = $2
-        ORDER BY data_referencia ASC, id ASC
-        LIMIT 1
-      `, [usuarioId, ano]);
-      if (patInicioResult.rows.length > 0) {
-        const patInicio = parseFloat(patInicioResult.rows[0].patrimonio_total);
-        if (patInicio > 0) {
-          patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patInicio) / patInicio) * 100);
-        }
+    if (patInicioRes.rows.length > 0) {
+      const patInicio = parseFloat(patInicioRes.rows[0].patrimonio_total);
+      if (patInicio > 0) {
+        patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patInicio) / patInicio) * 100);
       }
-    } catch (_) {}
+    }
 
-    // ── Saldo por mês do ano ─────────────────────────────────────
-    const saldoPorMesResult = await db.query(`
-      SELECT
-        EXTRACT(MONTH FROM data) AS mes,
-        COALESCE(SUM(CASE WHEN tipo = 'entrada' THEN valor ELSE 0 END), 0) AS entradas,
-        COALESCE(SUM(CASE WHEN tipo = 'saida'   THEN valor ELSE 0 END), 0) AS saidas
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND EXTRACT(YEAR FROM data) = $2
-        AND tipo IN ('entrada', 'saida')
-      GROUP BY EXTRACT(MONTH FROM data)
-      ORDER BY mes
-    `, [usuarioId, ano]);
-
+    // ── Saldo por mês ─────────────────────────────────────────────
     const saldoPorMes = Array.from({ length: 12 }, (_, i) => {
-      const found = saldoPorMesResult.rows.find(r => parseInt(r.mes) === i + 1);
+      const found = saldoPorMesRes.rows.find(r => parseInt(r.mes) === i + 1);
       if (!found) return null;
       const e = parseFloat(found.entradas);
       const s = parseFloat(found.saidas);
       return { mes: i + 1, e, s, saldo: e - s };
     });
 
-    // ── Categorias do mês ────────────────────────────────────────
-    const categoriasResult = await db.query(`
-      SELECT
-        COALESCE(c.nome, 'Outros') AS categoria,
-        SUM(t.valor) AS total
-      FROM transacoes t
-      LEFT JOIN categorias c ON t.categoria_id = c.id
-      WHERE t.usuario_id = $1
-        AND t.tipo = 'saida'
-        AND EXTRACT(MONTH FROM t.data) = $2
-        AND EXTRACT(YEAR  FROM t.data) = $3
-      GROUP BY c.nome
-      ORDER BY total DESC
-      LIMIT 6
-    `, [usuarioId, mes, ano]);
+    // ── Categorias ────────────────────────────────────────────────
+    const totalCategorias = categoriasRes.rows.reduce((s, r) => s + parseFloat(r.total), 0);
 
-    const totalCategorias = categoriasResult.rows.reduce((s, r) => s + parseFloat(r.total), 0);
-
-    // ── Maior gasto do mês ───────────────────────────────────────
-    const maiorGastoResult = await db.query(`
-      SELECT t.descricao, t.valor, COALESCE(c.nome, 'Outros') AS categoria
-      FROM transacoes t
-      LEFT JOIN categorias c ON t.categoria_id = c.id
-      WHERE t.usuario_id = $1
-        AND t.tipo = 'saida'
-        AND EXTRACT(MONTH FROM t.data) = $2
-        AND EXTRACT(YEAR  FROM t.data) = $3
-      ORDER BY t.valor DESC
-      LIMIT 1
-    `, [usuarioId, mes, ano]);
-
-    const maiorGasto = maiorGastoResult.rows[0] || null;
-
-    const maiorGastoAntResult = await db.query(`
-      SELECT valor FROM transacoes
-      WHERE usuario_id = $1
-        AND tipo = 'saida'
-        AND EXTRACT(MONTH FROM data) = $2
-        AND EXTRACT(YEAR  FROM data) = $3
-      ORDER BY valor DESC LIMIT 1
-    `, [usuarioId, mesAnt, anoAnt]);
-    const maiorGastoAnt = maiorGastoAntResult.rows[0]?.valor || 0;
+    // ── Maior gasto ───────────────────────────────────────────────
+    const maiorGasto    = maiorGastoRes.rows[0] || null;
+    const maiorGastoAnt = maiorGastoAntRes.rows[0]?.valor || 0;
     const tendenciaMaiorGasto = maiorGastoAnt > 0 && maiorGasto
       ? Math.round(((parseFloat(maiorGasto.valor) - parseFloat(maiorGastoAnt)) / parseFloat(maiorGastoAnt)) * 100)
       : 0;
 
-    // ── Resumo Jan–mês selecionado ───────────────────────────────
-    const resumoResult = await db.query(`
-      SELECT
-        EXTRACT(MONTH FROM data) AS mes,
-        COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-        COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-        COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND EXTRACT(YEAR  FROM data) = $2
-        AND EXTRACT(MONTH FROM data) <= $3
-      GROUP BY EXTRACT(MONTH FROM data)
-      ORDER BY mes
-    `, [usuarioId, ano, mes]);
-
-    const totalEntradas  = resumoResult.rows.reduce((s, r) => s + parseFloat(r.entradas), 0);
-    const totalSaidas    = resumoResult.rows.reduce((s, r) => s + parseFloat(r.saidas),   0);
-    const totalAportes   = resumoResult.rows.reduce((s, r) => s + parseFloat(r.aportes),  0);
-    const totalSaldo     = totalEntradas - totalSaidas;
-    const mesesComDados  = resumoResult.rows.length || 1;
-    const taxaPoupanca   = totalEntradas > 0 ? ((totalSaldo / totalEntradas) * 100).toFixed(1) : '0';
+    // ── Resumo acumulado ──────────────────────────────────────────
+    const totalEntradas = resumoRes.rows.reduce((s, r) => s + parseFloat(r.entradas), 0);
+    const totalSaidas   = resumoRes.rows.reduce((s, r) => s + parseFloat(r.saidas),   0);
+    const totalAportes  = resumoRes.rows.reduce((s, r) => s + parseFloat(r.aportes),  0);
+    const totalSaldo    = totalEntradas - totalSaidas;
+    const mesesComDados = resumoRes.rows.length || 1;
+    const taxaPoupanca  = totalEntradas > 0 ? ((totalSaldo / totalEntradas) * 100).toFixed(1) : '0';
     const pctInvestRenda = totalEntradas > 0 ? ((totalAportes / totalEntradas) * 100).toFixed(1) : '0';
 
-    // Melhor e pior mês
+    // ── Melhor / pior mês ─────────────────────────────────────────
     const melhorMesIdx = saldoPorMes.reduce((best, d, i) =>
-      d && (!saldoPorMes[best] || d.sd > (saldoPorMes[best]?.sd ?? -Infinity)) ? i : best, 0);
+      d && (!saldoPorMes[best] || d.saldo > (saldoPorMes[best]?.saldo ?? -Infinity)) ? i : best, 0);
     const piorMesIdx = saldoPorMes.reduce((worst, d, i) =>
-      d && (!saldoPorMes[worst] || d.sd < (saldoPorMes[worst]?.sd ?? Infinity)) ? i : worst, 0);
+      d && (!saldoPorMes[worst] || d.saldo < (saldoPorMes[worst]?.saldo ?? Infinity)) ? i : worst, 0);
 
-    // Maior impacto no período
-    const maiorImpactoResult = await db.query(`
-      SELECT
-        COALESCE(c.nome, 'Outros') AS categoria,
-        SUM(t.valor) AS total
-      FROM transacoes t
-      LEFT JOIN categorias c ON t.categoria_id = c.id
-      WHERE t.usuario_id = $1
-        AND t.tipo = 'saida'
-        AND EXTRACT(YEAR  FROM t.data) = $2
-        AND EXTRACT(MONTH FROM t.data) <= $3
-      GROUP BY c.nome
-      ORDER BY total DESC
-      LIMIT 1
-    `, [usuarioId, ano, mes]);
-    const maiorImpacto = maiorImpactoResult.rows[0] || null;
-
-    // ── Score ─────────────────────────────────────────────────────
+    // ── Score financeiro ──────────────────────────────────────────
     const pctTeto = entradas > 0 ? (saidas / entradas) * 100 : 0;
     let score = 100;
     if (saldo < 0)         score -= 30;
@@ -208,20 +220,19 @@ async function getDashboardCompleto(req, res) {
     const status = score >= 75 ? 'ok' : score >= 55 ? 'atencao' : 'critico';
     const cor    = score >= 75 ? '#16A34A' : score >= 55 ? '#F59E0B' : '#EF4444';
 
+    const maiorImpacto = maiorImpactoRes.rows[0] || null;
+
     // ── Resposta ──────────────────────────────────────────────────
     return res.json({
       periodo: { mes, ano },
 
-      // KPIs linha 2
       entradas: { valor: entradas, sub: 'Salário + extras', tendencia: pctEntradas },
       saidas:   { valor: saidas,   sub: 'Total de gastos',  tendencia: pctSaidas },
       saldo:    { valor: saldo, pctRenda: entradas > 0 ? parseFloat(((saldo / entradas) * 100).toFixed(1)) : 0, melhorMes: saldo >= saldoAnt },
 
-      // Campos legados
       e: entradas, s: saidas, sd: saldo,
       score, cor, status,
 
-      // Linha 1 — cards coloridos
       investimentos: {
         aporteMes: aportesMes,
         aportePctRenda: entradas > 0 ? parseFloat(((aportesMes / entradas) * 100).toFixed(1)) : 0,
@@ -229,7 +240,7 @@ async function getDashboardCompleto(req, res) {
         aportePctVsAnterior: pctAportes,
         vsMediaSemestral: 0,
         patrimonioTotal,
-        patrimonioVsMes,
+        patrimonioVsMes: aportesMes,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
       reserva:       { valor: 0, metaValor: 12000, pctMeta: 0, mesesCobertos: 0 },
@@ -250,13 +261,13 @@ async function getDashboardCompleto(req, res) {
       saldoPorMes,
 
       categorias: {
-        maiorImpacto: categoriasResult.rows[0] ? {
-          nome:      categoriasResult.rows[0].categoria,
-          valor:     parseFloat(categoriasResult.rows[0].total),
-          pct:       totalCategorias > 0 ? parseFloat(((parseFloat(categoriasResult.rows[0].total) / totalCategorias) * 100).toFixed(1)) : 0,
+        maiorImpacto: categoriasRes.rows[0] ? {
+          nome:      categoriasRes.rows[0].categoria,
+          valor:     parseFloat(categoriasRes.rows[0].total),
+          pct:       totalCategorias > 0 ? parseFloat(((parseFloat(categoriasRes.rows[0].total) / totalCategorias) * 100).toFixed(1)) : 0,
           tendencia: 0,
         } : null,
-        lista: categoriasResult.rows.map(r => ({
+        lista: categoriasRes.rows.map(r => ({
           nome:  r.categoria,
           valor: parseFloat(r.total),
           pct:   totalCategorias > 0 ? parseFloat(((parseFloat(r.total) / totalCategorias) * 100).toFixed(1)) : 0,
@@ -268,7 +279,7 @@ async function getDashboardCompleto(req, res) {
       saudeFinanceira: [
         { lbl: 'Poupança', val: `${entradas > 0 ? ((saldo/entradas)*100).toFixed(1) : 0}%`, cor: saldo >= 0 ? '#16A34A' : '#EF4444', pct: entradas > 0 ? Math.round((saldo/entradas)*100) : 0, ctx: `Meta 20% · Jan–${MESES_ABREV[mes-1]} ${ano}` },
         { lbl: 'Teto',     val: `${Math.round(pctTeto)}%`, cor: pctTeto < 80 ? '#16A34A' : pctTeto < 100 ? '#F59E0B' : '#EF4444', pct: Math.min(Math.round(pctTeto), 100), ctx: saidas > 0 ? `R$ ${Math.round(entradas - saidas).toLocaleString('pt-BR')} disponíveis` : 'Sem gastos' },
-        { lbl: 'Metas',    val: '0%',  cor: '#9CA3AF', pct: 0,  ctx: 'Nenhuma meta cadastrada' },
+        { lbl: 'Metas',    val: '0%',      cor: '#9CA3AF', pct: 0, ctx: 'Nenhuma meta cadastrada' },
         { lbl: 'Reserva',  val: '0 meses', cor: '#EF4444', pct: 0, ctx: 'Ideal 6 meses · sem dados' },
       ],
 
@@ -292,9 +303,7 @@ async function getDashboardCompleto(req, res) {
       comparativoPerfil: { pctPerfil: 12, pctVoce: entradas > 0 ? parseFloat(((saldo/entradas)*100).toFixed(1)) : 0 },
 
       radarFinanceiro: [],
-
       metasAndamento: [],
-
       scoreFinanceiro: score,
 
       acaoAgora: [
@@ -321,11 +330,10 @@ async function getDashboardCompleto(req, res) {
         maiorImpactoNome:        maiorImpacto?.categoria || null,
         maiorImpactoValor:       maiorImpacto ? parseFloat(maiorImpacto.total) : 0,
         maiorImpactoPercentual:  maiorImpacto && totalSaidas > 0
-          ? parseFloat(((parseFloat(maiorImpacto.total) / totalSaidas) * 100).toFixed(1))
-          : 0,
-        investimentosPeriodo:         totalAportes,
-        investimentosPercentualRenda:  parseFloat(pctInvestRenda),
-        patrimonioCrescimentoPercentual: patrimonioCrescimentoAno,
+          ? parseFloat(((parseFloat(maiorImpacto.total) / totalSaidas) * 100).toFixed(1)) : 0,
+        investimentosPeriodo:              totalAportes,
+        investimentosPercentualRenda:      parseFloat(pctInvestRenda),
+        patrimonioCrescimentoPercentual:   patrimonioCrescimentoAno,
         scoreMedio: score,
         piorMes: saldoPorMes[piorMesIdx] ? MESES_ABREV[piorMesIdx] : null,
       },
