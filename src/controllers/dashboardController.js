@@ -100,7 +100,7 @@ async function getDashboardCompleto(req, res) {
       if (!found) return null;
       const e = parseFloat(found.entradas);
       const s = parseFloat(found.saidas);
-      return { mes: i + 1, e, s, sd: e - s };
+      return { mes: i + 1, e, s, saldo: e - s };
     });
 
     // ── Categorias do mês ────────────────────────────────────────
