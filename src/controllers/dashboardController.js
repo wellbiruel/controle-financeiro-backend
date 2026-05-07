@@ -106,14 +106,15 @@ async function getDashboardCompleto(req, res) {
     // ── Categorias do mês ────────────────────────────────────────
     const categoriasResult = await db.query(`
       SELECT
-        COALESCE(categoria, 'Outros') AS categoria,
-        SUM(valor) AS total
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND tipo = 'saida'
-        AND EXTRACT(MONTH FROM data) = $2
-        AND EXTRACT(YEAR  FROM data) = $3
-      GROUP BY categoria
+        COALESCE(c.nome, 'Outros') AS categoria,
+        SUM(t.valor) AS total
+      FROM transacoes t
+      LEFT JOIN categorias c ON t.categoria_id = c.id
+      WHERE t.usuario_id = $1
+        AND t.tipo = 'saida'
+        AND EXTRACT(MONTH FROM t.data) = $2
+        AND EXTRACT(YEAR  FROM t.data) = $3
+      GROUP BY c.nome
       ORDER BY total DESC
       LIMIT 6
     `, [usuarioId, mes, ano]);
@@ -122,13 +123,14 @@ async function getDashboardCompleto(req, res) {
 
     // ── Maior gasto do mês ───────────────────────────────────────
     const maiorGastoResult = await db.query(`
-      SELECT descricao, valor, COALESCE(categoria, 'Outros') AS categoria
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND tipo = 'saida'
-        AND EXTRACT(MONTH FROM data) = $2
-        AND EXTRACT(YEAR  FROM data) = $3
-      ORDER BY valor DESC
+      SELECT t.descricao, t.valor, COALESCE(c.nome, 'Outros') AS categoria
+      FROM transacoes t
+      LEFT JOIN categorias c ON t.categoria_id = c.id
+      WHERE t.usuario_id = $1
+        AND t.tipo = 'saida'
+        AND EXTRACT(MONTH FROM t.data) = $2
+        AND EXTRACT(YEAR  FROM t.data) = $3
+      ORDER BY t.valor DESC
       LIMIT 1
     `, [usuarioId, mes, ano]);
 
@@ -179,14 +181,15 @@ async function getDashboardCompleto(req, res) {
     // Maior impacto no período
     const maiorImpactoResult = await db.query(`
       SELECT
-        COALESCE(categoria, 'Outros') AS categoria,
-        SUM(valor) AS total
-      FROM transacoes
-      WHERE usuario_id = $1
-        AND tipo = 'saida'
-        AND EXTRACT(YEAR  FROM data) = $2
-        AND EXTRACT(MONTH FROM data) <= $3
-      GROUP BY categoria
+        COALESCE(c.nome, 'Outros') AS categoria,
+        SUM(t.valor) AS total
+      FROM transacoes t
+      LEFT JOIN categorias c ON t.categoria_id = c.id
+      WHERE t.usuario_id = $1
+        AND t.tipo = 'saida'
+        AND EXTRACT(YEAR  FROM t.data) = $2
+        AND EXTRACT(MONTH FROM t.data) <= $3
+      GROUP BY c.nome
       ORDER BY total DESC
       LIMIT 1
     `, [usuarioId, ano, mes]);
