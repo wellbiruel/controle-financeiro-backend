@@ -48,22 +48,21 @@ async function getDashboardCompleto(req, res) {
           AND EXTRACT(YEAR  FROM data) = $3
       `, [usuarioId, mesAnt, anoAnt]),
 
-      // 3. Patrimônio mais recente (tabela pode não existir)
+      // 3. Patrimônio acumulado total (soma de todos os aportes/retiradas)
       db.query(`
-        SELECT patrimonio_total FROM investimentos
-        WHERE usuario_id = $1
-        ORDER BY data_referencia DESC, id DESC
-        LIMIT 1
-      `, [usuarioId]).catch(() => ({ rows: [] })),
+        SELECT COALESCE(SUM(valor), 0) AS patrimonio_total
+        FROM transacoes
+        WHERE usuario_id = $1 AND tipo = 'investimento'
+      `, [usuarioId]),
 
-      // 4. Patrimônio início do ano (crescimento YTD)
+      // 4. Patrimônio acumulado até início do ano (base para crescimento YTD)
       db.query(`
-        SELECT patrimonio_total FROM investimentos
+        SELECT COALESCE(SUM(valor), 0) AS patrimonio_total
+        FROM transacoes
         WHERE usuario_id = $1
-          AND EXTRACT(YEAR FROM data_referencia) = $2
-        ORDER BY data_referencia ASC, id ASC
-        LIMIT 1
-      `, [usuarioId, ano]).catch(() => ({ rows: [] })),
+          AND tipo = 'investimento'
+          AND EXTRACT(YEAR FROM data) < $2
+      `, [usuarioId, ano]),
 
       // 5. Saldo por mês do ano (gráfico)
       db.query(`
