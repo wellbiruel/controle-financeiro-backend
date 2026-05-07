@@ -2,10 +2,23 @@ const db = require('../config/database');
 
 async function listarTransacoes(req, res) {
   try {
-    const result = await db.query(
-      'SELECT * FROM transacoes WHERE usuario_id = $1 ORDER BY data DESC',
-      [req.userId]
-    );
+    const { mes, ano, tipo } = req.query;
+    let query = 'SELECT * FROM transacoes WHERE usuario_id = $1';
+    const params = [req.userId];
+
+    if (mes && ano) {
+      params.push(parseInt(mes), parseInt(ano));
+      query += ` AND EXTRACT(MONTH FROM data) = $${params.length - 1} AND EXTRACT(YEAR FROM data) = $${params.length}`;
+    }
+
+    if (tipo && tipo !== 'Todos' && tipo !== 'todos') {
+      params.push(tipo);
+      query += ` AND tipo = $${params.length}`;
+    }
+
+    query += ' ORDER BY data DESC LIMIT 50';
+
+    const result = await db.query(query, params);
     res.status(200).json(result.rows);
   } catch (error) {
     console.error('Erro ao listar transações:', error);
@@ -30,4 +43,18 @@ async function criarTransacao(req, res) {
   }
 }
 
-module.exports = { listarTransacoes, criarTransacao };
+async function deletarTransacao(req, res) {
+  try {
+    const { id } = req.params;
+    await db.query(
+      'DELETE FROM transacoes WHERE id = $1 AND usuario_id = $2',
+      [id, req.userId]
+    );
+    res.status(200).json({ message: 'Transação removida.' });
+  } catch (error) {
+    console.error('Erro ao deletar transação:', error);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+}
+
+module.exports = { listarTransacoes, criarTransacao, deletarTransacao };
