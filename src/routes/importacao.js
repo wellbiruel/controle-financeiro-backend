@@ -220,7 +220,7 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
   }
 });
 
-router.get('/modelo/:tipo?', async (req, res) => {
+async function handleModelo(req, res) {
   const tipo = req.params.tipo || 'saida';
   const { formato } = req.query;
 
@@ -254,6 +254,9 @@ router.get('/modelo/:tipo?', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   }
-});
+}
+
+router.get('/modelo', handleModelo);
+router.get('/modelo/:tipo', handleModelo);
 
 module.exports = router;
