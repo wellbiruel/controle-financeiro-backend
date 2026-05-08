@@ -24,44 +24,55 @@ async function getDashboardCompleto(req, res) {
       maiorImpactoRes,
     ] = await Promise.all([
 
-      // 1. KPIs do mês atual
+      // 1. KPIs do mês atual (aportes excluem Reserva de Segurança)
       db.query(`
         SELECT
-          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes_mes
-        FROM transacoes
-        WHERE usuario_id = $1
-          AND EXTRACT(MONTH FROM data) = $2
-          AND EXTRACT(YEAR  FROM data) = $3
+          COALESCE(SUM(CASE WHEN t.tipo = 'entrada' THEN t.valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'saida'   THEN t.valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'investimento'
+            AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
+            THEN t.valor ELSE 0 END), 0) AS aportes_mes
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND EXTRACT(MONTH FROM t.data) = $2
+          AND EXTRACT(YEAR  FROM t.data) = $3
       `, [usuarioId, mes, ano]),
 
-      // 2. KPIs do mês anterior (comparativos)
+      // 2. KPIs do mês anterior (comparativos, mesma exclusão)
       db.query(`
         SELECT
-          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
-        FROM transacoes
-        WHERE usuario_id = $1
-          AND EXTRACT(MONTH FROM data) = $2
-          AND EXTRACT(YEAR  FROM data) = $3
+          COALESCE(SUM(CASE WHEN t.tipo = 'entrada' THEN t.valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'saida'   THEN t.valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'investimento'
+            AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
+            THEN t.valor ELSE 0 END), 0) AS aportes
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND EXTRACT(MONTH FROM t.data) = $2
+          AND EXTRACT(YEAR  FROM t.data) = $3
       `, [usuarioId, mesAnt, anoAnt]),
 
-      // 3. Patrimônio acumulado total (soma de todos os aportes/retiradas)
+      // 3. Patrimônio acumulado total (excluindo Reserva de Segurança)
       db.query(`
-        SELECT COALESCE(SUM(valor), 0) AS patrimonio_total
-        FROM transacoes
-        WHERE usuario_id = $1 AND tipo = 'investimento'
+        SELECT COALESCE(SUM(t.valor), 0) AS patrimonio_total
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'investimento'
+          AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
       `, [usuarioId]),
 
-      // 4. Patrimônio acumulado até início do ano (base para crescimento YTD)
+      // 4. Patrimônio início do ano — base crescimento YTD (excluindo Reserva)
       db.query(`
-        SELECT COALESCE(SUM(valor), 0) AS patrimonio_total
-        FROM transacoes
-        WHERE usuario_id = $1
-          AND tipo = 'investimento'
-          AND EXTRACT(YEAR FROM data) < $2
+        SELECT COALESCE(SUM(t.valor), 0) AS patrimonio_total
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'investimento'
+          AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
+          AND EXTRACT(YEAR FROM t.data) < $2
       `, [usuarioId, ano]),
 
       // 5. Saldo por mês do ano (gráfico)
@@ -115,18 +126,21 @@ async function getDashboardCompleto(req, res) {
         ORDER BY valor DESC LIMIT 1
       `, [usuarioId, mesAnt, anoAnt]),
 
-      // 9. Resumo Jan–mês atual (acumulado do ano)
+      // 9. Resumo Jan–mês atual (acumulado do ano, aportes excluem Reserva)
       db.query(`
         SELECT
-          EXTRACT(MONTH FROM data) AS mes,
-          COALESCE(SUM(CASE WHEN tipo = 'entrada'      THEN valor ELSE 0 END), 0) AS entradas,
-          COALESCE(SUM(CASE WHEN tipo = 'saida'        THEN valor ELSE 0 END), 0) AS saidas,
-          COALESCE(SUM(CASE WHEN tipo = 'investimento' THEN valor ELSE 0 END), 0) AS aportes
-        FROM transacoes
-        WHERE usuario_id = $1
-          AND EXTRACT(YEAR  FROM data) = $2
-          AND EXTRACT(MONTH FROM data) <= $3
-        GROUP BY EXTRACT(MONTH FROM data)
+          EXTRACT(MONTH FROM t.data) AS mes,
+          COALESCE(SUM(CASE WHEN t.tipo = 'entrada' THEN t.valor ELSE 0 END), 0) AS entradas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'saida'   THEN t.valor ELSE 0 END), 0) AS saidas,
+          COALESCE(SUM(CASE WHEN t.tipo = 'investimento'
+            AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
+            THEN t.valor ELSE 0 END), 0) AS aportes
+        FROM transacoes t
+        LEFT JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND EXTRACT(YEAR  FROM t.data) = $2
+          AND EXTRACT(MONTH FROM t.data) <= $3
+        GROUP BY EXTRACT(MONTH FROM t.data)
         ORDER BY mes
       `, [usuarioId, ano, mes]),
 
