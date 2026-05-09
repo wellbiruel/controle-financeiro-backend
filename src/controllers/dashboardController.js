@@ -22,6 +22,7 @@ async function getDashboardCompleto(req, res) {
       maiorGastoAntRes,
       resumoRes,
       maiorImpactoRes,
+      patrimonioHistRes,
     ] = await Promise.all([
 
       // 1. KPIs do mês atual (aportes excluem Reserva de Segurança)
@@ -157,6 +158,14 @@ async function getDashboardCompleto(req, res) {
         ORDER BY total DESC
         LIMIT 1
       `, [usuarioId, ano, mes]),
+
+      // 11. Patrimônio histórico manual do ano — fallback silencioso se tabela não existir
+      db.query(`
+        SELECT mes, valor
+        FROM patrimonio_liquido_historico
+        WHERE usuario_id = $1 AND ano = $2
+        ORDER BY mes
+      `, [usuarioId, ano]).catch(() => ({ rows: [] })),
     ]);
 
     // ── Processa KPIs ─────────────────────────────────────────────
@@ -175,8 +184,22 @@ async function getDashboardCompleto(req, res) {
     const pctAportes  = aportesAnt  > 0 ? Math.round(((aportesMes - aportesAnt) / aportesAnt) * 100) : 0;
 
     // ── Patrimônio ────────────────────────────────────────────────
-    const patrimonioTotal = patrimonioRes.rows.length > 0
+    const patrimonioHistRows = patrimonioHistRes.rows || [];
+    // Se existe registro manual para o mês atual, usa ele; senão soma transações
+    const patrimonioManualMes = patrimonioHistRows.find(r => parseInt(r.mes) === mes);
+    const patrimonioSomado    = patrimonioRes.rows.length > 0
       ? parseFloat(patrimonioRes.rows[0].patrimonio_total) : 0;
+    const patrimonioTotal     = patrimonioManualMes
+      ? parseFloat(patrimonioManualMes.valor)
+      : patrimonioSomado;
+
+    // Histórico de 12 meses com herança (para gráfico no frontend)
+    let valorAnt = null;
+    const patrimonioHistorico = Array.from({ length: 12 }, (_, i) => {
+      const r = patrimonioHistRows.find(row => parseInt(row.mes) === i + 1);
+      if (r) { valorAnt = parseFloat(r.valor); return { mes: i + 1, valor: parseFloat(r.valor), manual: true }; }
+      return { mes: i + 1, valor: valorAnt, manual: false };
+    });
 
     let patrimonioCrescimentoAno = 0;
     if (patInicioRes.rows.length > 0) {
@@ -253,6 +276,7 @@ async function getDashboardCompleto(req, res) {
         aportePctVsAnterior: pctAportes,
         vsMediaSemestral: 0,
         patrimonioTotal,
+        patrimonioHistorico,
         patrimonioVsMes: aportesMes,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
