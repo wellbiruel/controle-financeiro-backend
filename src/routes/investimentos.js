@@ -13,7 +13,7 @@ router.get('/resumo', authenticateToken, async (req, res) => {
 
     const [totalRes, mesRes, anoRes, catRes, histRes] = await Promise.all([
 
-      // Patrimônio total acumulado (todos os aportes - retiradas, exceto reserva)
+      // Patrimônio acumulado até o mês selecionado (aportes - retiradas, exceto reserva)
       db.query(`
         SELECT COALESCE(SUM(t.valor), 0) AS total
         FROM transacoes t
@@ -21,7 +21,11 @@ router.get('/resumo', authenticateToken, async (req, res) => {
         WHERE t.usuario_id = $1
           AND t.tipo = 'investimento'
           AND (c.nome IS NULL OR c.nome != $2)
-      `, [userId, CAT_RESERVA]),
+          AND (
+            EXTRACT(YEAR FROM t.data) < $3
+            OR (EXTRACT(YEAR FROM t.data) = $3 AND EXTRACT(MONTH FROM t.data) <= $4)
+          )
+      `, [userId, CAT_RESERVA, ano, mes]),
 
       // Aporte líquido do mês selecionado
       db.query(`
