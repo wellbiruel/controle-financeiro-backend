@@ -2,63 +2,35 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../config/database');
 const auth    = require('../middleware/authMiddleware');
+const { getPatrimonioLiquidoPorPeriodo } = require('../services/patrimonioService');
 
-// GET /api/patrimonio?ano=XXXX
-// Retorna array de 12 meses com herança do mês anterior para meses sem registro.
+const TIPOS_VALIDOS = ['valor_total', 'adicionar', 'retirar'];
+
+// GET /api/patrimonio?ano=XXXX — array de 12 meses com PL computado
 router.get('/', auth, async (req, res) => {
   const ano = parseInt(req.query.ano) || new Date().getFullYear();
-  const uid = req.userId;
   try {
-    const [anoRes, prevRes] = await Promise.all([
-      pool.query(
-        `SELECT mes, valor, atualizado_em
-         FROM patrimonio_liquido_historico
-         WHERE usuario_id = $1 AND ano = $2
-         ORDER BY mes`,
-        [uid, ano]
-      ),
-      // Último valor de anos anteriores (semente da herança para janeiro)
-      pool.query(
-        `SELECT valor FROM patrimonio_liquido_historico
-         WHERE usuario_id = $1 AND ano < $2
-         ORDER BY ano DESC, mes DESC LIMIT 1`,
-        [uid, ano]
-      ),
-    ]);
-
-    let valorAnterior = prevRes.rows.length > 0 ? parseFloat(prevRes.rows[0].valor) : null;
-    const resultado   = [];
-
-    for (let m = 1; m <= 12; m++) {
-      const r = anoRes.rows.find(row => row.mes === m);
-      if (r) {
-        valorAnterior = parseFloat(r.valor);
-        resultado.push({ mes: m, ano, valor: parseFloat(r.valor), manual: true,  atualizado_em: r.atualizado_em });
-      } else {
-        resultado.push({ mes: m, ano, valor: valorAnterior,        manual: false, atualizado_em: null });
-      }
-    }
-
+    const resultado = await getPatrimonioLiquidoPorPeriodo(req.userId, ano);
     res.json(resultado);
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }
 });
 
-// POST /api/patrimonio — upsert { mes, ano, valor }
+// POST /api/patrimonio — { mes, ano, tipo, valor, descricao? }
 router.post('/', auth, async (req, res) => {
-  const { mes, ano, valor } = req.body;
-  if (!mes || !ano || valor == null || valor < 0) {
-    return res.status(400).json({ message: 'mes, ano e valor são obrigatórios.' });
+  const { mes, ano, tipo, valor, descricao } = req.body;
+  if (!mes || !ano || !tipo || valor == null || valor < 0) {
+    return res.status(400).json({ message: 'mes, ano, tipo e valor são obrigatórios.' });
+  }
+  if (!TIPOS_VALIDOS.includes(tipo)) {
+    return res.status(400).json({ message: 'tipo inválido. Use: valor_total, adicionar, retirar' });
   }
   try {
     const { rows } = await pool.query(
-      `INSERT INTO patrimonio_liquido_historico (usuario_id, mes, ano, valor, atualizado_em)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (usuario_id, mes, ano) DO UPDATE
-         SET valor = EXCLUDED.valor, atualizado_em = NOW()
-       RETURNING *`,
-      [req.userId, mes, ano, valor]
+      `INSERT INTO patrimonio_liquido_movimentacoes (usuario_id, mes, ano, tipo, valor, descricao)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [req.userId, mes, ano, tipo, valor, descricao || null]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -66,15 +38,46 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// DELETE /api/patrimonio/:mes/:ano — remove registro manual (mês volta a herdar)
+// GET /api/patrimonio/movimentacoes?mes=X&ano=Y — movimentos de um mês
+// DEVE vir antes de /:mes/:ano para não ser capturado como parâmetro
+router.get('/movimentacoes', auth, async (req, res) => {
+  const { mes, ano } = req.query;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, mes, ano, tipo, valor::float, descricao, criado_em
+       FROM patrimonio_liquido_movimentacoes
+       WHERE usuario_id = $1 AND mes = $2 AND ano = $3
+       ORDER BY criado_em ASC`,
+      [req.userId, mes, ano]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// DELETE /api/patrimonio/movimentacoes/:id — remove um movimento individual
+router.delete('/movimentacoes/:id', auth, async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM patrimonio_liquido_movimentacoes WHERE id = $1 AND usuario_id = $2`,
+      [req.params.id, req.userId]
+    );
+    res.json({ ok: true, removed: rowCount > 0 });
+  } catch (err) {
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// DELETE /api/patrimonio/:mes/:ano — remove TODOS os movimentos do mês
 router.delete('/:mes/:ano', auth, async (req, res) => {
   try {
     const { rowCount } = await pool.query(
-      `DELETE FROM patrimonio_liquido_historico
+      `DELETE FROM patrimonio_liquido_movimentacoes
        WHERE usuario_id = $1 AND mes = $2 AND ano = $3`,
       [req.userId, req.params.mes, req.params.ano]
     );
-    res.json({ ok: true, removed: rowCount > 0 });
+    res.json({ ok: true, removed: rowCount });
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }

@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const { getPatrimonioLiquidoPorPeriodo } = require('../services/patrimonioService');
 
 const MESES_ABREV = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
@@ -159,13 +160,8 @@ async function getDashboardCompleto(req, res) {
         LIMIT 1
       `, [usuarioId, ano, mes]),
 
-      // 11. Patrimônio histórico manual do ano — fallback silencioso se tabela não existir
-      db.query(`
-        SELECT mes, valor
-        FROM patrimonio_liquido_historico
-        WHERE usuario_id = $1 AND ano = $2
-        ORDER BY mes
-      `, [usuarioId, ano]).catch(() => ({ rows: [] })),
+      // 11. Patrimônio histórico via service central — fallback silencioso se tabela não existir
+      getPatrimonioLiquidoPorPeriodo(usuarioId, ano).catch(() => []),
     ]);
 
     // ── Processa KPIs ─────────────────────────────────────────────
@@ -184,22 +180,16 @@ async function getDashboardCompleto(req, res) {
     const pctAportes  = aportesAnt  > 0 ? Math.round(((aportesMes - aportesAnt) / aportesAnt) * 100) : 0;
 
     // ── Patrimônio ────────────────────────────────────────────────
-    const patrimonioHistRows = patrimonioHistRes.rows || [];
-    // Se existe registro manual para o mês atual, usa ele; senão soma transações
-    const patrimonioManualMes = patrimonioHistRows.find(r => parseInt(r.mes) === mes);
+    // patrimonioHistRes é array direto (service retorna array, não {rows})
+    const patrimonioHistRows  = patrimonioHistRes || [];
+    const patrimonioHistorico = patrimonioHistRows; // já é array de 12 meses com {mes,valor,manual}
+    // Se existe valor manual para o mês atual, usa ele; senão soma transações
+    const patrimonioManualMes = patrimonioHistRows.find(r => r.mes === mes && r.manual);
     const patrimonioSomado    = patrimonioRes.rows.length > 0
       ? parseFloat(patrimonioRes.rows[0].patrimonio_total) : 0;
     const patrimonioTotal     = patrimonioManualMes
-      ? parseFloat(patrimonioManualMes.valor)
+      ? patrimonioManualMes.valor
       : patrimonioSomado;
-
-    // Histórico de 12 meses com herança (para gráfico no frontend)
-    let valorAnt = null;
-    const patrimonioHistorico = Array.from({ length: 12 }, (_, i) => {
-      const r = patrimonioHistRows.find(row => parseInt(row.mes) === i + 1);
-      if (r) { valorAnt = parseFloat(r.valor); return { mes: i + 1, valor: parseFloat(r.valor), manual: true }; }
-      return { mes: i + 1, valor: valorAnt, manual: false };
-    });
 
     let patrimonioCrescimentoAno = 0;
     if (patInicioRes.rows.length > 0) {
