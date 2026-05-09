@@ -15,6 +15,7 @@ const ROTAS_OBRIGATORIAS = [
   "'/api/patrimonio'",
   "'/api/fluxo'",
   "'/api/importacao'",
+  "'/api/saidas'",
 ];
 
 const appSource = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
