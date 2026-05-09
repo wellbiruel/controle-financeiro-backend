@@ -9,7 +9,7 @@ const entradasRoutes = require('./routes/entradas');
 const categoriasRoutes = require('./routes/categorias');
 const reservaRoutes = require('./routes/reserva');
 const investimentosRoutes = require('./routes/investimentos');
-const patrimonioRoutes    = require('./routes/patrimonio');
+const patrimonioRoutes = require('./routes/patrimonio');
 
 const app = express();
 
@@ -23,7 +23,7 @@ app.use('/api/entradas', entradasRoutes);
 app.use('/api/categorias', categoriasRoutes);
 app.use('/api/reserva', reservaRoutes);
 app.use('/api/investimentos', investimentosRoutes);
-app.use('/api/patrimonio',   patrimonioRoutes);
+app.use('/api/patrimonio', patrimonioRoutes);
 app.use('/api/fluxo', fluxoRoutes);
 app.use('/api/importacao', importacaoRoutes);
 
