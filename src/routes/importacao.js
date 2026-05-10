@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const ExcelJS = require('exceljs');
+const { Pool } = require('pg');
 const { Readable } = require('stream');
 
-const db = require('../config/database');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const authenticateToken = require('../middleware/authMiddleware');
 
@@ -135,22 +136,15 @@ router.post('/preview', authenticateToken, upload.single('arquivo'), async (req,
   }
 });
 
-router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (req, res) => {
-  const usuarioId = req.userId;
-  const tipo = req.body.tipo;
-  const client = await db.connect();
+router.post('/confirmar', authenticateToken, async (req, res) => {
+  const { tipo, linhas, usuario_id } = req.body;
+  const client = await pool.connect();
 
   try {
-    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
-    const rows = await lerArquivo(req.file.buffer, req.file.originalname);
-    const linhas = tipo === 'entrada'
-      ? rows.map((r, i) => validarEntrada(r, i))
-      : rows.map((r, i) => validarSaida(r, i));
-
     await client.query('BEGIN');
     let importados = 0;
 
-    if (tipo !== 'entrada') {
+    if (tipo === 'saida') {
       for (const linha of linhas) {
         if (linha.status === 'erro') continue;
 
@@ -159,20 +153,20 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
            JOIN grupos_financeiros g ON i.grupo_id = g.id
            WHERE LOWER(i.nome) = LOWER($1) AND g.usuario_id = $2
            LIMIT 1`,
-          [linha.item, usuarioId]
+          [linha.item, usuario_id]
         );
 
         let itemId;
         if (itemRes.rows.length === 0) {
           let grupoRes = await client.query(
             `SELECT id FROM grupos_financeiros WHERE LOWER(nome) = LOWER($1) AND usuario_id = $2 LIMIT 1`,
-            [linha.categoria || 'Outros', usuarioId]
+            [linha.categoria || 'Outros', usuario_id]
           );
           let grupoId;
           if (grupoRes.rows.length === 0) {
             const novoGrupo = await client.query(
               `INSERT INTO grupos_financeiros (nome, usuario_id) VALUES ($1, $2) RETURNING id`,
-              [linha.categoria || 'Outros', usuarioId]
+              [linha.categoria || 'Outros', usuario_id]
             );
             grupoId = novoGrupo.rows[0].id;
           } else {
@@ -189,21 +183,23 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
         }
 
         await client.query(
-          `INSERT INTO lancamentos_mensais (item_id, usuario_id, mes, ano, valor)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO lancamentos_mensais (item_id, mes, ano, valor)
+           VALUES ($1, $2, $3, $4)
            ON CONFLICT (item_id, mes, ano) DO UPDATE SET valor = EXCLUDED.valor`,
-          [itemId, usuarioId, linha.mes, linha.ano, linha.valor]
+          [itemId, linha.mes, linha.ano, linha.valor]
         );
         importados++;
       }
-    } else {
+    }
+
+    if (tipo === 'entrada') {
       for (const linha of linhas) {
         if (linha.status === 'erro') continue;
-        const data = `${linha.ano}-${String(linha.mes).padStart(2, '0')}-01`;
         await client.query(
-          `INSERT INTO transacoes (usuario_id, tipo, valor, data, descricao)
-           VALUES ($1, 'entrada', $2, $3, $4)`,
-          [usuarioId, linha.valor, data, linha.tipo || 'Salário']
+          `INSERT INTO transacoes (usuario_id, tipo, valor, mes, ano, descricao, categoria)
+           VALUES ($1, 'entrada', $2, $3, $4, $5, $6)
+           ON CONFLICT DO NOTHING`,
+          [usuario_id, linha.valor, linha.mes, linha.ano, linha.tipo, 'Entrada']
         );
         importados++;
       }
@@ -220,8 +216,60 @@ router.post('/confirmar', authenticateToken, upload.single('arquivo'), async (re
   }
 });
 
-async function handleModelo(req, res) {
-  const tipo = req.params.tipo || 'saida';
+// ─── GET /modelo — arquivo combinado com 3 abas (Saídas + Entradas + Exemplos) ─
+router.get('/modelo', async (req, res) => {
+  try {
+    const ano = new Date().getFullYear();
+    const workbook = new ExcelJS.Workbook();
+
+    const wsSaidas = workbook.addWorksheet('Saídas');
+    wsSaidas.columns = [
+      { header: 'Item',      key: 'Item' },
+      { header: 'Valor',     key: 'Valor' },
+      { header: 'Mês',       key: 'Mes' },
+      { header: 'Categoria', key: 'Categoria' },
+      { header: 'Ano',       key: 'Ano' },
+    ];
+    wsSaidas.addRows([
+      { Item: 'Mercado Cooper', Valor: 508.00,  Mes: 2, Categoria: 'Mercado',  Ano: ano },
+      { Item: 'C6',            Valor: 3476.00, Mes: 2, Categoria: 'Cartões',  Ano: ano },
+      { Item: 'Internet',      Valor: 122.00,  Mes: 3, Categoria: 'Casa',     Ano: ano },
+    ]);
+
+    const wsEntradas = workbook.addWorksheet('Entradas');
+    wsEntradas.columns = [
+      { header: 'Entrada', key: 'Entrada' },
+      { header: 'Tipo',    key: 'Tipo' },
+      { header: 'Mês',     key: 'Mes' },
+      { header: 'Ano',     key: 'Ano' },
+    ];
+    wsEntradas.addRows([
+      { Entrada: 6626.00, Tipo: 'Salário',    Mes: 3, Ano: ano },
+      { Entrada: 500.00,  Tipo: 'Renda Extra', Mes: 3, Ano: ano },
+    ]);
+
+    const wsEx = workbook.addWorksheet('Exemplos');
+    wsEx.columns = [{ header: 'Instrução', key: 'Instrução' }];
+    wsEx.addRows([
+      { Instrução: 'Preencha a aba Saídas para importar gastos.' },
+      { Instrução: 'Preencha a aba Entradas para importar receitas.' },
+      { Instrução: 'Coluna Mês: número inteiro (1 = Janeiro, 12 = Dezembro).' },
+      { Instrução: 'Coluna Ano: ex. ' + ano },
+      { Instrução: 'Deixe as linhas de exemplo como referência ou apague-as.' },
+    ]);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="modelo_financeiro.xlsx"');
+    res.send(buffer);
+  } catch (e) {
+    console.error('importacao/modelo error:', e);
+    res.status(500).json({ error: 'Erro ao gerar modelo.' });
+  }
+});
+
+router.get('/modelo/:tipo', async (req, res) => {
+  const { tipo } = req.params;
   const { formato } = req.query;
 
   const data = tipo === 'saida'
@@ -254,9 +302,6 @@ async function handleModelo(req, res) {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   }
-}
-
-router.get('/modelo', handleModelo);
-router.get('/modelo/:tipo', handleModelo);
+});
 
 module.exports = router;
