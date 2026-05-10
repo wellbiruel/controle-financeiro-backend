@@ -56,7 +56,7 @@ async function getDashboardCompleto(req, res) {
           AND EXTRACT(YEAR  FROM t.data) = $3
       `, [usuarioId, mesAnt, anoAnt]),
 
-      // 3. Patrimônio acumulado total (excluindo Reserva de Segurança)
+      // 3. Patrimônio acumulado até o mês selecionado (excluindo Reserva de Segurança)
       db.query(`
         SELECT COALESCE(SUM(t.valor), 0) AS patrimonio_total
         FROM transacoes t
@@ -64,7 +64,11 @@ async function getDashboardCompleto(req, res) {
         WHERE t.usuario_id = $1
           AND t.tipo = 'investimento'
           AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
-      `, [usuarioId]),
+          AND (
+            EXTRACT(YEAR FROM t.data) < $2
+            OR (EXTRACT(YEAR FROM t.data) = $2 AND EXTRACT(MONTH FROM t.data) <= $3)
+          )
+      `, [usuarioId, ano, mes]),
 
       // 4. Patrimônio início do ano — base crescimento YTD (excluindo Reserva)
       db.query(`
