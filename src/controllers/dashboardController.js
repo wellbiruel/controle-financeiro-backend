@@ -24,6 +24,7 @@ async function getDashboardCompleto(req, res) {
       resumoRes,
       maiorImpactoRes,
       patrimonioHistRes,
+      reservaRes,
     ] = await Promise.all([
 
       // 1. KPIs do mês atual (aportes excluem Reserva de Segurança)
@@ -166,6 +167,20 @@ async function getDashboardCompleto(req, res) {
 
       // 11. Patrimônio histórico via service central — fallback silencioso se tabela não existir
       getPatrimonioLiquidoPorPeriodo(usuarioId, ano).catch(() => []),
+
+      // 12. Reserva de Segurança — saldo acumulado até o mês selecionado
+      db.query(`
+        SELECT COALESCE(SUM(t.valor), 0) AS reserva_total
+        FROM transacoes t
+        JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'investimento'
+          AND c.nome = 'Reserva de Segurança'
+          AND (
+            EXTRACT(YEAR FROM t.data) < $2
+            OR (EXTRACT(YEAR FROM t.data) = $2 AND EXTRACT(MONTH FROM t.data) <= $3)
+          )
+      `, [usuarioId, ano, mes]),
     ]);
 
     // ── Processa KPIs ─────────────────────────────────────────────
@@ -201,6 +216,49 @@ async function getDashboardCompleto(req, res) {
       if (patInicio > 0) {
         patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patInicio) / patInicio) * 100);
       }
+    }
+
+    // ── Reserva de Segurança ──────────────────────────────────────
+    const reservaValor        = parseFloat(reservaRes.rows[0].reserva_total) || 0;
+    const reservaMetaValor    = 12000;
+    const reservaMeses        = saidas > 0 ? parseFloat((reservaValor / saidas).toFixed(1)) : 0;
+    const reservaPctMeta      = reservaMetaValor > 0 ? Math.min(Math.round((reservaValor / reservaMetaValor) * 100), 100) : 0;
+
+    // ── Radar financeiro — insights dinâmicos ─────────────────────
+    const radarInsights = [];
+    const pctPoupanca = entradas > 0 ? Math.round((saldo / entradas) * 100) : 0;
+    const pctAporteRenda = entradas > 0 ? Math.round((aportesMes / entradas) * 100) : 0;
+
+    if (pctTeto >= 100) {
+      radarInsights.push({ tipo: 'alert', cat: 'Teto ultrapassado', txt: `Gastos superaram entradas em ${MESES_ABREV[mes-1]} (${Math.round(pctTeto)}%). Revise lançamentos e reduza despesas.`, cta: 'Ver fluxo' });
+    } else if (pctTeto >= 80) {
+      radarInsights.push({ tipo: 'warn', cat: 'Teto próximo do limite', txt: `${Math.round(pctTeto)}% do orçamento utilizado. Restam R$ ${Math.round(entradas - saidas).toLocaleString('pt-BR')} — evite novos gastos.`, cta: 'Ver fluxo' });
+    } else if (entradas > 0) {
+      radarInsights.push({ tipo: 'ok', cat: 'Teto sob controle', txt: `Apenas ${Math.round(pctTeto)}% do orçamento utilizado em ${MESES_ABREV[mes-1]}. Bom equilíbrio entre entradas e saídas.`, cta: 'Ver fluxo' });
+    }
+
+    if (saldo < 0) {
+      radarInsights.push({ tipo: 'alert', cat: 'Déficit no período', txt: `Saídas superaram entradas em R$ ${Math.abs(Math.round(saldo)).toLocaleString('pt-BR')}. Priorize cortar gastos não essenciais.`, cta: 'Ver insights' });
+    } else if (pctPoupanca >= 20) {
+      radarInsights.push({ tipo: 'ok', cat: 'Poupança saudável', txt: `Guardando ${pctPoupanca}% da renda em ${MESES_ABREV[mes-1]}. Meta atingida! Continue assim para acelerar seus objetivos.`, cta: 'Ver metas' });
+    } else if (entradas > 0) {
+      radarInsights.push({ tipo: 'info', cat: 'Poupança abaixo da meta', txt: `Guardando ${pctPoupanca}% da renda. Meta recomendada: 20%. Reduzir gastos variáveis pode ajudar.`, cta: 'Ver metas' });
+    }
+
+    if (reservaValor === 0) {
+      radarInsights.push({ tipo: 'alert', cat: 'Reserva de emergência', txt: `Sem reserva de emergência. O ideal é ter 6 meses de despesas guardados${saidas > 0 ? ` (≈ R$ ${Math.round(saidas * 6).toLocaleString('pt-BR')})` : ''}.`, cta: 'Ajustar' });
+    } else if (reservaMeses < 3) {
+      radarInsights.push({ tipo: 'warn', cat: 'Reserva insuficiente', txt: `Reserva cobre ${reservaMeses} ${reservaMeses === 1 ? 'mês' : 'meses'}. Recomendado: 6 meses. Continue aportando para aumentá-la.`, cta: 'Ajustar' });
+    } else {
+      radarInsights.push({ tipo: 'ok', cat: 'Reserva adequada', txt: `Reserva cobre ${reservaMeses} meses de despesas — dentro do recomendado. Mantenha o ritmo de aportes.`, cta: 'Ajustar' });
+    }
+
+    if (aportesMes === 0) {
+      radarInsights.push({ tipo: 'info', cat: 'Sem aportes no mês', txt: `Nenhum investimento registrado em ${MESES_ABREV[mes-1]}. Investir regularmente é essencial para atingir objetivos financeiros.`, cta: 'Ver metas' });
+    } else if (pctAporteRenda >= 10) {
+      radarInsights.push({ tipo: 'ok', cat: 'Investindo bem', txt: `Aporte de ${pctAporteRenda}% da renda em ${MESES_ABREV[mes-1]}. Excelente disciplina — patrimônio cresce de forma consistente.`, cta: 'Ver metas' });
+    } else {
+      radarInsights.push({ tipo: 'info', cat: 'Aporte abaixo do ideal', txt: `Investindo ${pctAporteRenda}% da renda. Meta recomendada: 10–15%. Pequenos aumentos mensais fazem grande diferença.`, cta: 'Ver insights' });
     }
 
     // ── Saldo por mês ─────────────────────────────────────────────
@@ -274,7 +332,7 @@ async function getDashboardCompleto(req, res) {
         patrimonioVsMes: aportesMes,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
-      reserva:       { valor: 0, metaValor: 12000, pctMeta: 0, mesesCobertos: 0 },
+      reserva:       { valor: reservaValor, metaValor: reservaMetaValor, pctMeta: reservaPctMeta, mesesCobertos: reservaMeses },
       metasAtivas:   { total: 0, resumo: 'Nenhuma meta cadastrada', barras: [] },
       limiteRestante: { valor: 0, pctRestante: 0, teto: 0 },
 
@@ -311,7 +369,7 @@ async function getDashboardCompleto(req, res) {
         { lbl: 'Poupança', val: `${entradas > 0 ? ((saldo/entradas)*100).toFixed(1) : 0}%`, cor: saldo >= 0 ? '#16A34A' : '#EF4444', pct: entradas > 0 ? Math.round((saldo/entradas)*100) : 0, ctx: `Meta 20% · Jan–${MESES_ABREV[mes-1]} ${ano}` },
         { lbl: 'Teto',     val: `${Math.round(pctTeto)}%`, cor: pctTeto < 80 ? '#16A34A' : pctTeto < 100 ? '#F59E0B' : '#EF4444', pct: Math.min(Math.round(pctTeto), 100), ctx: saidas > 0 ? `R$ ${Math.round(entradas - saidas).toLocaleString('pt-BR')} disponíveis` : 'Sem gastos' },
         { lbl: 'Metas',    val: '0%',      cor: '#9CA3AF', pct: 0, ctx: 'Nenhuma meta cadastrada' },
-        { lbl: 'Reserva',  val: '0 meses', cor: '#EF4444', pct: 0, ctx: 'Ideal 6 meses · sem dados' },
+        { lbl: 'Reserva',  val: `${reservaMeses} ${reservaMeses === 1 ? 'mês' : 'meses'}`, cor: reservaMeses >= 6 ? '#16A34A' : reservaMeses >= 3 ? '#F59E0B' : '#EF4444', pct: Math.min(Math.round((reservaMeses / 6) * 100), 100), ctx: `Ideal 6 meses · ${reservaValor > 0 ? `R$ ${Math.round(reservaValor).toLocaleString('pt-BR')}` : 'sem dados'}` },
       ],
 
       comparativos: {
@@ -333,7 +391,7 @@ async function getDashboardCompleto(req, res) {
 
       comparativoPerfil: { pctPerfil: 12, pctVoce: entradas > 0 ? parseFloat(((saldo/entradas)*100).toFixed(1)) : 0 },
 
-      radarFinanceiro: [],
+      radarFinanceiro: radarInsights,
       metasAndamento: [],
       scoreFinanceiro: score,
 
