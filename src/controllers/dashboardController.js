@@ -25,7 +25,7 @@ async function getDashboardCompleto(req, res) {
       maiorImpactoRes,
       patrimonioHistRes,
       reservaRes,
-      patrimonioAntRes,
+      reservaAntRes,
       patrimonioHistAntRes,
     ] = await Promise.all([
 
@@ -187,8 +187,19 @@ async function getDashboardCompleto(req, res) {
           )
       `, [usuarioId, ano, mes]),
 
-      // 13. (legado — mantido para não quebrar destructuring)
-      db.query(`SELECT 0 AS patrimonio_total`),
+      // 13. Reserva de Segurança — saldo acumulado até o mês ANTERIOR
+      db.query(`
+        SELECT COALESCE(SUM(t.valor), 0) AS reserva_total
+        FROM transacoes t
+        JOIN categorias c ON t.categoria_id = c.id
+        WHERE t.usuario_id = $1
+          AND t.tipo = 'investimento'
+          AND c.nome = 'Reserva de Segurança'
+          AND (
+            EXTRACT(YEAR FROM t.data) < $2
+            OR (EXTRACT(YEAR FROM t.data) = $2 AND EXTRACT(MONTH FROM t.data) <= $3)
+          )
+      `, [usuarioId, anoAnt, mesAnt]),
 
       // 14. Patrimônio do ano anterior — base crescimento anual e Jan vs Dez
       getPatrimonioLiquidoPorPeriodo(usuarioId, ano - 1).catch(() => []),
@@ -247,6 +258,12 @@ async function getDashboardCompleto(req, res) {
     const reservaMetaValor    = 12000;
     const reservaMeses        = saidas > 0 ? parseFloat((reservaValor / saidas).toFixed(1)) : 0;
     const reservaPctMeta      = reservaMetaValor > 0 ? Math.min(Math.round((reservaValor / reservaMetaValor) * 100), 100) : 0;
+    const reservaAntValor     = parseFloat(reservaAntRes.rows[0]?.reserva_total ?? 0);
+    const variacaoReserva     = reservaValor - reservaAntValor;
+    const variacaoReservaPct  = reservaAntValor > 0
+      ? parseFloat(((variacaoReserva / reservaAntValor) * 100).toFixed(1))
+      : (reservaValor > 0 ? 100 : 0);
+    const estadoReserva       = reservaValor === 0 ? 'zerado' : variacaoReserva > 0 ? 'crescendo' : variacaoReserva < 0 ? 'reduzindo' : 'estavel';
 
     // ── Radar financeiro — insights dinâmicos ─────────────────────
     const pctTeto = entradas > 0 ? (saidas / entradas) * 100 : 0;
@@ -357,7 +374,7 @@ async function getDashboardCompleto(req, res) {
         patrimonioVsMesPct,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
-      reserva:       { valor: reservaValor, metaValor: reservaMetaValor, pctMeta: reservaPctMeta, mesesCobertos: reservaMeses },
+      reserva:       { valor: reservaValor, metaValor: reservaMetaValor, pctMeta: reservaPctMeta, mesesCobertos: reservaMeses, variacao: variacaoReserva, variacaoPct: variacaoReservaPct, estado: estadoReserva },
       metasAtivas:   { total: 0, resumo: 'Nenhuma meta cadastrada', barras: [] },
       limiteRestante: { valor: 0, pctRestante: 0, teto: 0 },
 
