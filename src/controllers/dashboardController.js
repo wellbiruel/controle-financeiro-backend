@@ -26,6 +26,7 @@ async function getDashboardCompleto(req, res) {
       patrimonioHistRes,
       reservaRes,
       patrimonioAntRes,
+      patrimonioHistAntRes,
     ] = await Promise.all([
 
       // 1. KPIs do mês atual (aportes excluem Reserva de Segurança)
@@ -186,19 +187,11 @@ async function getDashboardCompleto(req, res) {
           )
       `, [usuarioId, ano, mes]),
 
-      // 13. Patrimônio acumulado até o mês ANTERIOR (base para variação mensal)
-      db.query(`
-        SELECT COALESCE(SUM(t.valor), 0) AS patrimonio_total
-        FROM transacoes t
-        LEFT JOIN categorias c ON t.categoria_id = c.id
-        WHERE t.usuario_id = $1
-          AND t.tipo = 'investimento'
-          AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
-          AND (
-            EXTRACT(YEAR FROM t.data) < $2
-            OR (EXTRACT(YEAR FROM t.data) = $2 AND EXTRACT(MONTH FROM t.data) <= $3)
-          )
-      `, [usuarioId, anoAnt, mesAnt]),
+      // 13. (legado — mantido para não quebrar destructuring)
+      db.query(`SELECT 0 AS patrimonio_total`),
+
+      // 14. Patrimônio do ano anterior — base crescimento anual e Jan vs Dez
+      getPatrimonioLiquidoPorPeriodo(usuarioId, ano - 1).catch(() => []),
     ]);
 
     // ── Processa KPIs ─────────────────────────────────────────────
@@ -228,21 +221,25 @@ async function getDashboardCompleto(req, res) {
       ? patrimonioManualMes.valor
       : patrimonioSomado;
 
-    const patrimonioTotalAnt = patrimonioAntRes.rows.length > 0
-      ? parseFloat(patrimonioAntRes.rows[0].patrimonio_total) : 0;
+    // ── Variação vs mês anterior (usa service — inclui entradas manuais) ────────
+    const patrimonioHistAntRows = Array.isArray(patrimonioHistAntRes) ? patrimonioHistAntRes : [];
+    const histMesAntObj = mes === 1
+      ? patrimonioHistAntRows.find(r => r.mes === 12)   // Janeiro → Dezembro do ano anterior
+      : patrimonioHistRows.find(r => r.mes === mesAnt);  // Demais meses → mesmo ano
+    const patrimonioMesAnt = histMesAntObj?.valor ?? null;
 
-    const patrimonioVsMesPct = patrimonioTotalAnt > 0
-      ? parseFloat(((patrimonioTotal - patrimonioTotalAnt) / patrimonioTotalAnt * 100).toFixed(1))
+    const patrimonioVsMesValor = patrimonioMesAnt !== null ? patrimonioTotal - patrimonioMesAnt : 0;
+    const patrimonioVsMesPct = patrimonioMesAnt !== null && patrimonioMesAnt > 0
+      ? parseFloat(((patrimonioTotal - patrimonioMesAnt) / patrimonioMesAnt * 100).toFixed(1))
       : (patrimonioTotal > 0 ? 100 : 0);
 
+    // ── Crescimento anual: base = Dezembro do ano anterior ──────────────────────
+    const patDezembro = patrimonioHistAntRows.find(r => r.mes === 12)?.valor ?? null;
     let patrimonioCrescimentoAno = 0;
-    if (patInicioRes.rows.length > 0) {
-      const patJaneiro = parseFloat(patInicioRes.rows[0].patrimonio_total);
-      if (patJaneiro > 0) {
-        patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patJaneiro) / patJaneiro) * 100);
-      } else if (patrimonioTotal > 0) {
-        patrimonioCrescimentoAno = 100;
-      }
+    if (patDezembro !== null && patDezembro > 0) {
+      patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patDezembro) / patDezembro) * 100);
+    } else if (patrimonioTotal > 0) {
+      patrimonioCrescimentoAno = 100;
     }
 
     // ── Reserva de Segurança ──────────────────────────────────────
@@ -356,7 +353,7 @@ async function getDashboardCompleto(req, res) {
         vsMediaSemestral: 0,
         patrimonioTotal,
         patrimonioHistorico,
-        patrimonioVsMes: patrimonioTotal - patrimonioTotalAnt,
+        patrimonioVsMes: patrimonioVsMesValor,
         patrimonioVsMesPct,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
