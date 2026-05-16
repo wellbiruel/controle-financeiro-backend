@@ -72,7 +72,7 @@ async function getDashboardCompleto(req, res) {
           )
       `, [usuarioId, ano, mes]),
 
-      // 4. Patrimônio início do ano — base crescimento YTD (excluindo Reserva)
+      // 4. Patrimônio ao final de Janeiro do ano selecionado — base do crescimento anual
       db.query(`
         SELECT COALESCE(SUM(t.valor), 0) AS patrimonio_total
         FROM transacoes t
@@ -80,7 +80,10 @@ async function getDashboardCompleto(req, res) {
         WHERE t.usuario_id = $1
           AND t.tipo = 'investimento'
           AND (c.nome IS NULL OR c.nome != 'Reserva de Segurança')
-          AND EXTRACT(YEAR FROM t.data) < $2
+          AND (
+            EXTRACT(YEAR FROM t.data) < $2
+            OR (EXTRACT(YEAR FROM t.data) = $2 AND EXTRACT(MONTH FROM t.data) <= 1)
+          )
       `, [usuarioId, ano]),
 
       // 5. Saldo por mês do ano (gráfico)
@@ -228,11 +231,15 @@ async function getDashboardCompleto(req, res) {
     const patrimonioTotalAnt = patrimonioAntRes.rows.length > 0
       ? parseFloat(patrimonioAntRes.rows[0].patrimonio_total) : 0;
 
+    const patrimonioVsMesPct = patrimonioTotalAnt > 0
+      ? parseFloat(((patrimonioTotal - patrimonioTotalAnt) / patrimonioTotalAnt * 100).toFixed(1))
+      : (patrimonioTotal > 0 ? 100 : 0);
+
     let patrimonioCrescimentoAno = 0;
     if (patInicioRes.rows.length > 0) {
-      const patInicio = parseFloat(patInicioRes.rows[0].patrimonio_total);
-      if (patInicio > 0) {
-        patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patInicio) / patInicio) * 100);
+      const patJaneiro = parseFloat(patInicioRes.rows[0].patrimonio_total);
+      if (patJaneiro > 0) {
+        patrimonioCrescimentoAno = Math.round(((patrimonioTotal - patJaneiro) / patJaneiro) * 100);
       } else if (patrimonioTotal > 0) {
         patrimonioCrescimentoAno = 100;
       }
@@ -350,6 +357,7 @@ async function getDashboardCompleto(req, res) {
         patrimonioTotal,
         patrimonioHistorico,
         patrimonioVsMes: patrimonioTotal - patrimonioTotalAnt,
+        patrimonioVsMesPct,
         patrimonioVsAno: patrimonioCrescimentoAno,
       },
       reserva:       { valor: reservaValor, metaValor: reservaMetaValor, pctMeta: reservaPctMeta, mesesCobertos: reservaMeses },
