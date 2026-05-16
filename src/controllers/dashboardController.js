@@ -225,6 +225,7 @@ async function getDashboardCompleto(req, res) {
     const reservaPctMeta      = reservaMetaValor > 0 ? Math.min(Math.round((reservaValor / reservaMetaValor) * 100), 100) : 0;
 
     // ── Radar financeiro — insights dinâmicos ─────────────────────
+    const pctTeto = entradas > 0 ? (saidas / entradas) * 100 : 0;
     const radarInsights = [];
     const pctPoupanca = entradas > 0 ? Math.round((saldo / entradas) * 100) : 0;
     const pctAporteRenda = entradas > 0 ? Math.round((aportesMes / entradas) * 100) : 0;
@@ -296,7 +297,6 @@ async function getDashboardCompleto(req, res) {
       d && (!saldoPorMes[worst] || d.saldo < (saldoPorMes[worst]?.saldo ?? Infinity)) ? i : worst, 0);
 
     // ── Score financeiro ──────────────────────────────────────────
-    const pctTeto = entradas > 0 ? (saidas / entradas) * 100 : 0;
     let score = 100;
     if (saldo < 0)         score -= 30;
     if (pctTeto > 100)     score -= 20;
